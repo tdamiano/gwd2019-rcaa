@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ---
 title: "RCAA Tables"
 output:
@@ -669,3 +670,677 @@ kable(gini) %>%
   row_spec(nrow(gini), bold = T)
 ```
 
+||||||| merged common ancestors
+=======
+---
+title: "RCAA Tables"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, cache = T}
+knitr::opts_chunk$set(cache = TRUE, echo = FALSE)
+library(ggplot2)
+if (!require(pacman)) install.packages('pacman')
+library(pacman)
+
+p_load(tidyverse, sf, skimr, broom, mapview, scales, DT, kableExtra)
+
+met_data <- read_rds("./data/metdata.rds")  
+
+met_data <- met_data %>% 
+  mutate(
+  shrw_conw   = 100*wpop_cnw/white,
+  shrp_conp   = 100*ppop_conp/poc,
+  shrb_conb   = 100*bpop_conb/black,
+  shrw_conw50 = 100*wpop_cnw50/white,
+  shr_waff    = 100*waffhh/tothh,
+  shra_cona   = 100*aff_cona/affhh,
+  shr_ppov    =100*ppov/totpop,
+  rcapw_type  = case_when(
+    prcaaw > mean(met_data$prcaaw) & prcapp > mean(met_data$prcapp) ~ "High-RCAA/High-RCAP",
+    prcaaw > mean(met_data$prcaaw) & prcapp < mean(met_data$prcapp) ~ "High-RCAA/Low-RCAP", 
+    prcaaw < mean(met_data$prcaaw) & prcapp > mean(met_data$prcapp) ~ "Low-RCAA/High-RCAP", 
+    prcaaw < mean(met_data$prcaaw) & prcapp < mean(met_data$prcapp) ~ "Low-RCAA/Low-RCAP", 
+  )
+  ) %>% 
+  mutate_if(is.numeric, round, 2)
+
+write_csv(met_data, "./data/metdata.csv")
+
+rg <- met_data %>% 
+  select(MGEOID = GEOID, REGION)
+
+tract_data <- read_rds("./data/tractdata.rds") %>% 
+  left_join(rg)
+
+ihs <- function(x) {log(x + (x^2 + 1)^(1/2))}
+```
+
+#Figure 2
+
+```{r fig.width= 15, fig.height= 10}
+
+ggplot(tract_data, aes(x = medinc, y=pctw)) +
+  geom_point(size = 0.4, alpha = 0.1) +
+  coord_cartesian(ylim = c(0,100)) +
+  scale_x_continuous(labels = c("$0", "$50k", "$100k", "$150k", "$200k", "$250k")) +
+  facet_wrap(~mabr) +
+  theme(text = element_text(size=10),
+        axis.text.x = element_text(angle=90, hjust=1))
+```
+
+#Figure 2 with RCAA/P Highlighted
+##4x Poverty COLI standard
+```{r fig.width= 15, fig.height= 10, cache= T}
+
+ggplot(tract_data, aes(x = medinc, y=pctw, color = rc_ap)) +
+  geom_point(size = 0.6) +
+  coord_cartesian(ylim = c(0,100)) +
+  scale_x_continuous(labels = c("$0", "$50k", "$100k", "$150k", "$200k", "$250k")) +
+  scale_color_discrete(labels = c("RCAA", "RCAP", "Other"), na.value = "grey27") +
+  facet_wrap(~METRON) +
+  theme(text = element_text(size=10),
+        axis.text.x = element_text(angle=90, hjust=1)) + theme(plot.subtitle = element_text(vjust = 1), 
+    plot.caption = element_text(vjust = 1), 
+    panel.background = element_rect(fill = NA)) +labs(x = "Median household income", y = "Percent White", 
+    colour = NULL)
+```
+
+
+#Table 1 Isolation Index
+
+Mean Isolation index by region, standard deviation in parentheses.
+```{r}
+sum_region <- function(df,groupvar,...){
+  groupvar <- enquo(groupvar)
+  sumvars <- quos(...)
+  nsumvars <- length(sumvars)
+  
+cnt_grps <- df %>%
+  group_by(!!groupvar) %>%
+  count()
+
+cnt_tot <- df %>% count()
+
+sum <- df %>% 
+  group_by(!!groupvar) %>% 
+  select(!!!sumvars) %>% 
+  summarise_all(funs(mean, sd))
+
+sum <- left_join(cnt_grps, sum)
+
+total <- df %>% 
+  select(!!groupvar, !!!sumvars) %>% 
+  summarise_if(is.numeric, funs(mean, sd))
+
+
+total <- c(REGION = "Total",n = cnt_tot$n, total)
+
+paren <- function (x){
+  paste0("(",x,")")
+}
+
+tab<- bind_rows(sum, total) %>%
+  select(sort(current_vars())) %>% 
+  select(REGION, n, everything()) %>% 
+  mutate_if(is.numeric, round, 2) %>% 
+  mutate_at(vars(contains("sd")),funs(paren)) %>% 
+  ungroup()
+
+tab
+}
+
+iso <- sum_region(met_data, REGION, iso_w, iso_p, iso_b)
+iso <- iso[,c(1,2,7,8,5,6,3,4)]
+
+colnames(iso) <- c("Region", "N", "White", "", "POC", "", "Black", "")
+kable(iso) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(iso), bold = T)
+```
+
+#Top 10 Iso White
+
+In 35/50 metro areas white isolation index greater than POC isolation Index.
+```{r}
+t <- met_data %>% 
+  arrange(desc(iso_w)) %>% 
+  filter(row_number() <= 10) %>% 
+  select(NAME, iso_w, iso_p) %>% 
+  mutate(ratio = round(iso_w/iso_p,2))
+
+kable(t) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T)
+
+```
+Ratio = iso_w/iso_p
+
+#Top 10 Ratio W/B Iso
+
+```{r}
+t <- met_data %>% 
+  arrange(desc(iso_p)) %>% 
+  filter(row_number()<= 10) %>% 
+  select(NAME, iso_w, iso_p) %>% 
+  mutate(ratio = round(iso_w/iso_p,2))
+
+kable(t) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T)
+```
+Ratio = iso_w/iso_p
+
+#Segregation Scrolling Table
+
+```{r, cache=T}
+met_data %>% 
+  select(NAME, pctw, iso_w, iso_p, iso_b, dis_wp, dis_wb) %>%
+  mutate_if(is.numeric,round,2) %>% 
+  datatable(rownames = FALSE, colnames = c("Metro Name", "% White", "White I", "POC I", "Black I", "White-POC D", "White-Black D"))
+```
+
+# Table 2 Racial Concentration
+
+```{r}
+
+race_con <- sum_region(met_data, REGION, shrw_conw, shrw_conw50, shrp_conp, shrb_conb)
+
+race_con
+race_con <- race_con[,c(1,2,7,8,9,10,5,6,3,4)]
+
+colnames(race_con) <- c("Region", "N", "% Whites in 90+% White N'hoods", "","% of Whites in Maj White N'hoods", "", "% of POC in Maj POC N'hoods", "", "% of Blacks in Maj Black N'hoods", "")
+kable(race_con) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(race_con), bold = T)
+
+```
+
+# Top 10 Con White
+
+40/50 Metro Areas higher concentrated white
+```{r}
+t <- met_data %>% 
+  arrange(desc(shrw_conw)) %>% 
+  filter(row_number()<= 10) %>% 
+  select(NAME, shrw_conw, shrp_conp) %>% 
+  mutate(ratio = round(shrw_conw/shrp_conp,2))
+
+kable(t) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T)
+```
+
+# Top 10 Con POC
+
+```{r}
+t <- met_data %>% 
+  arrange(desc(shrp_conp)) %>% 
+  filter(row_number()<= 10) %>% 
+  select(NAME, shrw_conw, shrp_conp) %>% 
+  mutate(ratio = round(shrw_conw/shrp_conp,2))
+
+kable(t) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T)
+```
+
+# Income Concentrations
+
+```{r}
+inc_con <- sum_region(met_data, REGION, pconpv, pconaf)
+
+colnames(inc_con) <- c("Region", "N", "% Tracts w/ Concentrated Affluence", "","% Tracts w/ Concentrated Poverty", "")
+kable(inc_con) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(race_con), bold = T)
+
+```
+
+# Top 10 Con Aff
+
+37 Metro areas have higher rates of concentrated affluence compared to concentrated poverty
+```{r}
+t <- met_data %>% 
+  arrange(desc(pconaf)) %>% 
+  filter(row_number()<= 10) %>% 
+  select(NAME, pconaf, pconpv) %>% 
+  mutate(ratio = round(pconaf/pconpv,2))
+
+kable(t) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T)
+```
+
+# Top 10 Con Pov
+
+37 Metro areas have higher rates of concentrated affluence compared to concentrated poverty
+```{r}
+t <- met_data %>% 
+  arrange(desc(pconpv)) %>% 
+  filter(row_number()<= 10) %>% 
+  select(NAME, pconaf, pconpv) %>% 
+  mutate(ratio = round(pconaf/pconpv,2))
+
+kable(t) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T)
+```
+
+# Segregation by Income
+
+```{r}
+seg_inc <- sum_region(met_data, REGION, dis_aff, iso_aff, dis_pov, iso_pov) %>% 
+  select(-contains("sd"))
+
+colnames(seg_inc) <- c("Region", "N", "D-Aff", "D-Pov","I-Aff", "I-Pov")
+kable(seg_inc) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(seg_inc), bold = T)
+```
+
+# Income Segregation scrolling table
+
+```{r, cache = T}
+met_data %>%
+  select(NAME, dis_aff, dis_pov, iso_aff, iso_pov) %>%
+  datatable(rownames = FALSE)
+  
+```
+
+# Share of affluent/poor living in concentrated areas
+```{r}
+inc_con <- sum_region(met_data, REGION, shrp_conp, shra_cona ) %>% 
+  select(-contains("sd"))
+
+met_data %>% 
+  select(NAME, shrp_conp, shra_cona) %>% 
+  filter(shra_cona > shrp_conp)
+
+inc_con
+
+colnames(seg_inc) <- c("Region", "N", "D-Aff", "D-Pov","I-Aff", "I-Pov")
+kable(seg_inc) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(seg_inc), bold = T)
+```
+
+
+
+
+# Racial/Ethnic Make-up of Con Aff
+
+Exhibit X details the racial composition of areas of concentrated affluence. Whites tend to make up large majorities in areas of concentrated affluence. Whites made up over 80% of areas of concentrated affluence on average in the Midwest. In contrast to the Midwest, other regions of the country slightly more racially diverse areas of concentrated affluence. In the South for example, the average share of blacks living in areas of concentrated affluence is almost 2.5 times as large as the share in the Midwest. Though whites are still a majority in areas of concentrated affluence, in the West, Asians make up almost 20% of the population of areas of concentrated affluence. 
+
+
+
+```{r}
+conaff_race <- tract_data %>% 
+  filter(con_aff == "Y") %>%
+  sum_region(.,REGION, pctw, pctb, pcth, pcta)
+
+conaff_race <- conaff_race[,c(1,2,9,10,5,6,7,8,3,4)]
+
+colnames(conaff_race) <- c("Region", "N", "% White", "","% Black", "", "% Hispanic", "","% Asian", "")
+kable(conaff_race) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(conaff_race), bold = T)
+
+```
+
+#Racial Make-up of Con Pov
+
+```{r}
+conpov_race <- tract_data %>% 
+  filter(con_pov == "Y") %>%
+  sum_region(.,REGION, pctw, pctb, pcth, pcta)
+
+conpov_race <- conpov_race[,c(1,2,9,10,5,6,7,8,3,4)]
+
+colnames(conpov_race) <- c("Region", "N", "% White", "","% Black", "", "% Latinx", "","% Asian", "")
+kable(conpov_race) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(conpov_race), bold = T)
+
+```
+
+#RCAA/RCAP Comparison
+
+State which Metro Areas have RCAAP-W and RCAA-POC
+```{r, cache=TRUE}
+
+shr_rcaap <- sum_region(met_data, REGION, prcaaw, prcapp, prcaap, prcapw)
+
+shr_rcaap <- shr_rcaap[,c(1,2,5,6,7,8,3,4,9,10)]
+
+colnames(shr_rcaap) <- c("Region", "N", "RCAA-WHT", "","RCAP-POC", "", "RCAA-POC", "","RCAP-W", "")
+kable(shr_rcaap) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(shr_rcaap), bold = T)
+```
+
+# Segregation of White Affluence/ Poor POC
+
+```{r}
+segwaff_ppov <- sum_region(met_data, REGION, iso_waff, iso_ppov, dis_waff, dis_ppov)
+
+segwaff_ppov <- segwaff_ppov[,c(1,2,9,10,7,8,5,6,3,4)]
+
+colnames(segwaff_ppov) <- c("Region", "N", "White Aff. I", "","POC Pov. I", "", "White Aff. D", "","POC Pov. D", "")
+kable(segwaff_ppov) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(segwaff_ppov), bold = T)
+
+```
+
+# Segregation of White affluence and group size
+
+Dissimilarity index is negatively correlated with share of households that are white and affluent (-.54). In the Twin Cites, 29.96% of all household in the region are white and affluent, second only to Boston by less than one tenth of a percentage point.
+
+I think this gets at a larger point about why we care about segregation. Do we care about segregation due to the "evenness" of the population in which D would be the most important statistic or do the (real/perceived) negative consequences of segregation stem more from exposure or lack there of to outgroups. In particular, policy makers have focused heavily on the perceived isolation of poor communities of color from more affluent white communities. In this case, then isolation or its inverse exposure seem to be a better measurement. 
+
+```{r}
+
+ggplot(met_data, aes(shr_waff,dis_waff, label = mabr)) +
+  geom_text(check_overlap = T) +
+  geom_vline(xintercept = mean(met_data$shr_waff)) +
+  geom_hline(yintercept = mean(met_data$dis_waff))
+
+
+```
+
+
+#Relationship between RCAA & RCAP
+
+```{r cache = TRUE}
+ggplot(met_data, aes(prcaaw, prcapp, label = mabr)) +
+  geom_text(check_overlap = T) +
+  geom_vline(xintercept = mean(met_data$prcaaw)) +
+  geom_hline(yintercept = mean(met_data$prcapp)) +
+  labs(x = "% RCAA", y = "% RCAP") +
+  ggtitle("Share RCAA & RCAP")
+
+```
+
+
+
+# Top 10 RCAA
+
+In 11 of the largest 50 metro areas, there are more RCAA than RCAP. As may be exptected this pattern is more likely in whiter, wealthier metro areas. 
+
+```{r}
+rcaa <- met_data %>%
+  select(NAME, rcaa_w, prcaaw, rcap_p, prcapp) %>%
+  arrange(desc(prcaaw)) %>% 
+  filter(prcaaw > prcapp)
+
+colnames(rcaa) <- c("Region","RCAA (N)", "%","RCAP (N)", "%")
+kable(rcaa) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T)
+
+met_data %>% 
+  filter(prcaaw > prcapp) %>% 
+  select(NAME, rcap_p, prcaap, rcaa_w, prcaaw)
+```
+
+
+#RCAA - w/ Controls
+
+```{r}
+mod1 <- lm(ihs(prcaaw) ~ ihs(pctw) + log(medinc), data = met_data)
+
+mod1_dat <- bind_cols(met_data,augment(mod1)) %>% 
+  rename(shr_waff_resid = .std.resid)
+
+ggplot(mod1_dat, aes(shr_waff, shr_waff_resid, label = mabr)) +
+  geom_text(size = 3) +
+  geom_hline(yintercept = 0)
+```
+
+#RCAP - w/Controls
+
+```{r}
+
+mod2 <- lm(ihs(prcapp) ~ ihs(shr_ppov), data = subset(met_data))
+
+mod2_dat <- bind_cols(met_data,augment(mod2)) %>% 
+  rename(shr_ppov_resid = .std.resid)
+
+ggplot(mod2_dat, aes(shr_ppov, shr_ppov_resid, label = mabr)) +
+  geom_text(size = 3) +
+  geom_hline(yintercept = 0) +
+  ggtitle("RCAP Residuals (controling for size of POC Pov population)")
+```
+
+# RCAA/RCAP Comparison w/ Controls
+
+Correlation betweeen RCAA/RCAP with and without controls
+```{r}
+comb <- tibble(mabr = met_data$mabr, stdr_rcaa = mod1_dat$shr_waff_resid, stdr_rcap = mod2_dat$shr_ppov_resid, REGION = met_data$REGION)
+
+ggplot(comb, aes(stdr_rcaa, stdr_rcap, label = mabr, color = REGION)) +
+  geom_text(size = 3) +
+  geom_vline(xintercept = mean(comb$stdr_rcap)) +
+  geom_hline(yintercept = mean(comb$stdr_rcap)) +
+  ggtitle("RCAA v RCAP w/ Controls")
+
+ggplot(met_data, aes(prcaaw, prcapp, label = mabr, color = REGION)) +
+  geom_text(size = 4) +
+  geom_vline(xintercept = mean(met_data$prcaaw)) +
+  geom_hline(yintercept = mean(met_data$prcapp)) +
+  labs(x = "% RCAA", y = "% RCAP") +
+  ggtitle("Share RCAA & RCAP")
+```
+
+# Rank/Rank Change
+```{r}
+mod_data <- left_join(comb,met_data) %>% 
+  mutate(
+    rcaa_rank = rank(-prcaaw),
+    rcap_rank = rank(-prcapp),
+    crcaa_rnk = rank(-stdr_rcaa),
+    crcap_rnk = rank(-stdr_rcap)
+  )
+
+ggplot(mod_data, aes(rcaa_rank, rcaa_rank - crcaa_rnk, label = mabr, color = REGION)) +
+  geom_text(size = 3) +
+  geom_hline(yintercept = 0)
+```
+
+# Comparing RCAA/RCAP
+
+## Racial Characteristcs
+
+```{r}
+seg_comp <- function(df, collapse_by_region = TRUE, ...) {
+  
+  sumvars <- quos(...)
+  
+  rcaap_sum <- df %>%
+    group_by(METRON, REGION, rc_ap) %>%
+    drop_na(rc_ap) %>%
+    select(METRON, rc_ap, REGION, !!!sumvars) %>%
+    summarise_if(is.numeric, funs(mean), na.rm = T) %>%
+    gather(var, value, 4:length(.)) %>%
+    unite(var1, rc_ap, var, sep = "_") %>%
+    spread(var1, value)
+  
+  msa_sum <- df %>%
+    group_by(METRON) %>%
+    select(METRON, !!!sumvars) %>%
+    summarise_if(is.numeric, funs(mean), na.rm = T) %>%
+    rename_at(vars(2:length(.)), funs(paste0("all_",.)))
+  
+  df2 <- left_join(msa_sum, rcaap_sum) %>%
+    select(METRON, REGION, everything()) %>%
+    mutate_if(is.numeric, round, 2) %>%
+    ungroup()
+  
+  if(collapse_by_region){
+    cnt_grps <- df2 %>%
+      group_by(REGION) %>%
+      count()
+    
+    sum <- df2 %>%
+      group_by(REGION) %>%
+      summarise_if(is.numeric, funs(mean), na.rm = TRUE)
+    
+    cnt_tot <- df2 %>% count()
+    
+    sum <- left_join(cnt_grps, sum)
+    
+    total <- df2 %>%
+      summarise_if(is.numeric, funs(mean), na.rm = TRUE)
+    
+    total <- c(REGION = "Total", n = cnt_tot$n, total)
+    
+    paren <- function (x) {
+      paste0("(", x, ")")
+    }
+    
+    tab <- bind_rows(sum, total) %>%
+      select(sort(current_vars())) %>%
+      select(REGION, n, everything()) %>%
+      mutate_if(is.numeric, round, 2) %>%
+      mutate_at(vars(contains("sd")), funs(paren)) %>%
+      ungroup()
+    
+    tab
+  } else {
+    df2
+  }
+}
+
+race <- seg_comp(tract_data, collapse_by_region = TRUE, pctw, pctb, pcth, pcta) %>% 
+  select(-contains("sd"))
+
+colnames(race) <- c("Region", "N", "% Asian", "% Black", "% Hispanic", "% White", "% Asian", "% Black", "% Hispanic", "% White", "% Asian", "% Black", "% Hispanic", "% White")
+
+kable(race) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(race), bold = T) %>%
+  add_header_above(., c(" " = 2, "All" = 4, "RCAA" = 4, "RCAP" = 4 ))
+```
+
+## Income
+
+```{r}
+
+inc <- seg_comp(tract_data, collapse_by_region = TRUE, medinc, pctpov, pctaff) %>% 
+  select(-contains("sd")) %>%
+  mutate_at(vars(contains("inc")), funs(round)) %>% 
+  mutate_at(vars(contains("inc")), funs(scales::dollar(.))) 
+
+
+inc
+
+colnames(inc) <- c("Region", "N", "Median Income", "Pct Aff", "Pct Pov", "Median Income", "Pct Aff", "Pct Pov", "Median Income", "Pct Aff", "Pct Pov")
+
+kable(inc) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(race), bold = T) %>%
+  add_header_above(., c(" " = 2, "All" = 3, "RCAA" = 3, "RCAP" = 3))
+```
+
+
+## Housing
+```{r}
+
+hsg <- seg_comp(tract_data, collapse_by_region = TRUE, pctown, medval, medrent) %>% 
+  select(-contains("sd")) %>%
+  mutate_at(vars(contains("med")), funs(round)) %>% 
+  mutate_at(vars(contains("med")), funs(scales::dollar(.))) 
+
+
+colnames(hsg) <- c("Region", "N", "Median Rent", "Median Value", "% Owner Occupied","Median Rent", "Median Value", "% Owner Occupied","Median Rent", "Median Value", "% Owner Occupied")
+
+kable(hsg) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(race), bold = T) %>%
+  add_header_above(., c(" " = 2, "All" = 3, "RCAA" = 3, "RCAP" = 3))
+
+```
+
+## Education
+```{r}
+educ <- seg_comp(tract_data, collapse_by_region = TRUE, pctnhs, pctbach) %>% 
+  select(-contains("sd"))
+
+colnames(educ) <- c("Region", "N", "% No HS", "% College", "% No HS", "% College", "% No HS", "% College")
+
+kable(educ) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(educ), bold = T) %>%
+  add_header_above(., c(" " = 2, "All" = 2, "RCAA" = 2, "RCAP" = 2))
+
+```
+
+## Age
+```{r}
+age <- seg_comp(tract_data, collapse_by_region = TRUE, pcto65, pctu18) %>% 
+  select(-contains("sd"))
+
+colnames(age) <- c("Region", "N", "% Under 18", "% Over 65", "% Under 18", "% Over 65", "% Under 18", "% Over 65" )
+
+kable(age) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(age), bold = T) %>%
+  add_header_above(., c(" " = 2, "All" = 2, "RCAA" = 2, "RCAP" = 2))
+
+```
+
+## Distance & Density
+
+```{r}
+distd <- seg_comp(tract_data, collapse_by_region = TRUE, dist, pop_dens) %>% 
+  select(-contains("sd"))
+
+distd <-  distd %>%
+  mutate_at(vars(contains("dist")), funs(.*0.000621371)) %>%
+  mutate_at(vars(contains("dist")), round, 1) %>%
+  mutate_at(vars(contains("pop")), round) %>%
+  mutate_if(is.numeric, scales::comma)
+
+colnames(distd) <- c("Region", "N", "Dist from Core", "Pop Density", "Dist from Core", "Pop Density", "Dist from Core", "Pop Density")
+
+kable(distd) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(distd), bold = T) %>%
+  add_header_above(., c(" " = 2, "All" = 2, "RCAA" = 2, "RCAP" = 2))
+
+```
+Distance from core (mi), population density (pop per square mile)
+
+## Inequality
+
+```{r}
+gini <- seg_comp(tract_data, collapse_by_region = TRUE, gini) %>% 
+  select(-contains("sd"))
+
+colnames(gini) <- c("Region", "N", "All", "RCAA", "RCAP")
+
+kable(gini) %>%
+  kable_styling("striped") %>%
+  column_spec(1, bold = T) %>%
+  row_spec(nrow(gini), bold = T)
+```
+
+>>>>>>> df33681559601403ee97759e786d0c97244ceec6
