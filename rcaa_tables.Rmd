@@ -148,7 +148,7 @@ Ratio = iso_w/iso_p
 
 ```{r}
 t <- met_data %>% 
-  arrange(desc(iso_p)) %>% 
+  arrange(desc(iso_p)) %>%
   filter(row_number()<= 10) %>% 
   select(NAME, iso_w, iso_p) %>% 
   mutate(ratio = round(iso_w/iso_p,2))
@@ -296,9 +296,6 @@ kable(seg_inc) %>%
   column_spec(1, bold = T) %>%
   row_spec(nrow(seg_inc), bold = T)
 ```
-
-
-
 
 # Racial/Ethnic Make-up of Con Aff
 
