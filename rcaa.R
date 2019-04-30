@@ -4,8 +4,9 @@ library(pacman)
 
 p_load(tidyverse, tidycensus, tigris, sf, purrrlyr, skimr, broom, mapview)
 
+
 #replace with your api key
-census_api_key("51bc73761c34ae0c240079cfc71fb4c50eaaec52", install = T)
+# census_api_key("your-key-here", install = T)
 
 options(tigris_use_cache = TRUE)
 options(tigris_class = "sf")
@@ -13,24 +14,46 @@ options(tigris_class = "sf")
 ############## Spatial Data ################
 
 #Pull Top 50 Metro Areas
-msa <- "metropolitan statistical area/micropolitan statistical area"
 
-top50msa <- get_acs(geography = msa, 
-        variables = "B01003_001",  cache_table = TRUE) %>% 
-  filter(str_detect(NAME, "Metro"), !str_detect(NAME, "PR|AK|HI")) %>% 
-  arrange(desc(estimate)) %>% 
-  filter(row_number() <= 50) %>% 
-  rename(mtotpop = estimate) %>% 
-  select(-moe, -variable)
+if(!file.exists("./top50msa.rds")) {
+ 
+  msa <- "metropolitan statistical area/micropolitan statistical area"
+  
+  top50msa <- get_acs(geography = msa, 
+                      variables = "B01003_001",  cache_table = TRUE, year = 2016) %>% 
+    filter(str_detect(NAME, "Metro"), !str_detect(NAME, "PR|AK|HI")) %>% 
+    arrange(desc(estimate)) %>% 
+    filter(row_number() <= 50) %>% 
+    rename(mtotpop = estimate) %>% 
+    select(-moe, -variable)
+  
+
+  
+  write_rds(msa, "./data/top50msa.rds")
+  
+} else {
+  top50msa <- read_rds("./data/top50msa.rds")
+}
+
 
 
 
 #### MSA Shapefile ####
-msa_sf <- core_based_statistical_areas() %>%
-  left_join(top50msa, by = "GEOID") %>% 
-  drop_na(mtotpop) %>% 
-  st_transform(5070) %>% 
-  select(-NAME.x,-NAME.y, -c(CSAFP:CBSAFP), -c(LSAD:INTPTLON), MGEOID = GEOID, NAME = NAMELSAD, mtotpop)
+if(!file.exists("./data/msasf.rds")){
+  
+  msa_sf <- core_based_statistical_areas() %>%
+    left_join(top50msa, by = "GEOID") %>% 
+    drop_na(mtotpop) %>% 
+    st_transform(5070) %>% 
+    select(GEOID, NAME = NAME.x, geometry)
+  
+  st_write(msa_sf, "./data/msa.shp", delete_dsn = TRUE)
+  write_rds(msa_sf, "./data/msasf.rds")
+  
+} else{
+  msa_sf <- read_rds("./data/msasf.rds")
+}
+
 
 top50msa <- top50msa %>% 
   rename(MGEOID = GEOID)
@@ -58,7 +81,7 @@ msa50_pc <- left_join(top50msa, pc_raw) %>%
 
 ##### Spatial Place data ####
 if(!file.exists("./data/cent_city_sf.rds")){
-  metro_geoid <- unique(msa_sf$MGEOID)
+  metro_geoid <- unique(msa_sf$GEOID)
   
   metro_places<- function(metro_geoid) {
     # First, identify which states intersect the metro area using the
@@ -86,7 +109,7 @@ if(!file.exists("./data/cent_city_sf.rds")){
     }
     
     # Now, find out which places are within the metro area
-    within <- st_within(pl, metro)
+    within <- st_intersects(pl, metro)
     
     within_lgl <- map_lgl(within, function(x) {
       if (length(x) == 1) {
@@ -102,25 +125,32 @@ if(!file.exists("./data/cent_city_sf.rds")){
     return(output)
   }
   
-  cent_city_sf <- map(metro_geoid, metro_places) %>% 
-    reduce(rbind) %>% left_join(msa50_pc, by = c("GEOID" = "CGEOID")) %>% 
+  cent_city_sf <- map(metro_geoid, metro_places) %>%
+    reduce(rbind) %>% 
+    left_join(msa50_pc, by = c("GEOID" = "CGEOID")) %>%
     filter(cent_city == "Y")
   
   write_rds(cent_city_sf, "./data/cent_city_sf.rds")
   
 } else {
 
-  cent_city_sf <- read_rds("./data/cent_city_sf.rds")
+  cent_city_sf <- read_rds("./data/cent_city_sf.rds") %>% 
+    as_tibble() %>% 
+    st_as_sf() %>% 
+    distinct()
 }
 
-cent_city_sf <- read_rds("./data/cent_city_sf.rds")
+st_write(cent_city_sf, "./data/centcity.shp", delete_dsn = TRUE)
 
-st_write(cent_city_sf, "./data/centcity.shp")
+
+dspace <- function (df) {
+  df %>% 
+    as.data.frame() %>% 
+    select(-geometry) %>% 
+    as_tibble() }
 
 #### Metro Census Tracts and city halls ####
 # Get CBSAs, then identify those in the halls dataset
-msa_sf <- msa_sf %>% 
-  select(metro_id = MGEOID)
 
 # Metro tracts by county
 cmlu <- read_csv("./data/county_metro_lu.csv", col_names = c("MGEOID", "METRON", "CGEOID", "CNTYN"),
@@ -130,7 +160,7 @@ cmlu <- read_csv("./data/county_metro_lu.csv", col_names = c("MGEOID", "METRON",
                    CGEOID = col_character(),
                    CNTYN = col_character()
                  ))   %>% rename(CNGEOID = CGEOID) %>% 
-  mutate( CNGEOID = ifelse(nchar(CNGEOID) == 4, paste0("0", CNGEOID), CNGEOID)
+  mutate(CNGEOID = ifelse(nchar(CNGEOID) == 4, paste0("0", CNGEOID), CNGEOID)
   )
   
 
@@ -227,6 +257,7 @@ halls <- read_csv("./city_hall/city_halls.csv") %>%
   st_as_sf(coords = c("X", "Y"), crs = 4269) %>% 
   st_transform(5070)
 
+st_write(halls, "./data/cityhalls.shp", delete_dsn = TRUE)
 
 tract_distance <- map(top50msa$MGEOID, function(x) {
   t1 <- filter(msa_tracts_sf, MGEOID == x)
@@ -254,10 +285,11 @@ tract_centroids <- msa_tracts_sf %>% st_centroid()
 
 if(!file.exists("./data/tract_cc_status.rds")){
   tract_cc_status <- tract_centroids %>%
-    st_join(cent_city_sf, join = st_is_within_distance, dist = 200) %>% 
+    st_join(cent_city_sf, join = st_intersects) %>% 
     as_tibble() %>% 
     select(GEOID = GEOID.x, ALAND = ALAND.x, METRON, MGEOID = MGEOID.x, city_name)
   
+
   write_rds(tract_cc_status, "./data/tract_cc_status.rds")
   
 } else {
@@ -265,96 +297,20 @@ if(!file.exists("./data/tract_cc_status.rds")){
 }
 
 #Join geometric vars
-
-tract_geovars <- left_join(tract_distance, tract_cc_status, by = "GEOID") %>% 
-  select(GEOID, MGEOID = MGEOID.x, METRON = METRON.x, ALAND, dist, cc_name = city_name) %>%
+tract_geovars <- msa_tracts_sf %>%
+  left_join(tract_cc_status, by = "GEOID") %>%
+  left_join(tract_distance) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  as_tibble() %>%
+  select(GEOID, MGEOID = MGEOID.x, METRON = METRON.x, ALAND = ALAND.x, dist, cc_name = city_name) %>%
   mutate(
     sqmi = ALAND*3.861e-7,
-    cc_status = ifelse(is.na(cc_name), "N", "Y")
+    cc_status = ifelse(!is.na(cc_name), 1, 0)
   ) %>% 
   select(-ALAND)
 
 ############## Census Variables ################
-varlist <- c(
-  #Pop
-  totpop  = "B03002_001",
-  white   = "B03002_003",
-  black   = "B03002_004",
-  aian    = "B03002_005",
-  asian   = "B03002_006",
-  hisp    = "B03002_012",
-  
-  #age - u18
-  mu5    = "B01001_003",
-  m5_9   = "B01001_004",
-  m10_14 = "B01001_005",
-  m15_17 = "B01001_006",
-  fu5    = "B01001_027",
-  f5_9   = "B01001_028",
-  f10_14 = "B01001_029",
-  f15_17 = "B01001_030",
-  
-  #age - o65
-  m65_66 = "B01001_020",
-  m67_69 = "B01001_021",
-  m70_74 = "B01001_022",
-  m75_79 = "B01001_023",
-  m80_84 = "B01001_024",
-  mo84   = "B01001_025",
-  f65_66 = "B01001_044",
-  f67_69 = "B01001_045",
-  f70_74 = "B01001_046",
-  f75_79 = "B01001_047",
-  f80_84 = "B01001_048",
-  fo84   = "B01001_049",
-  
-  #Pov
-  povden  = "B17020_001",
-  totpov  = "B17020_002",
-  bpovden = "B17020B_001",
-  bpov    = "B17020B_002",
-  wpovden = "B17020H_001",
-  wpov    = "B17020H_002",
-  
-  #HH Income
-  medinc  = "B19013_001",
-  bmedimc = "B19013B_001",
-  wmedinc = "B19013H_001",
-  gini    = "B19083_001",
-  
-  #Education
-  popo25  = "B15003_001",
-  a       = "B15003_002",
-  b       = "B15003_003",
-  c       = "B15003_004",
-  d       = "B15003_005",
-  e       = "B15003_006",
-  f       = "B15003_007",
-  g       = "B15003_008",
-  h       = "B15003_009",
-  i       = "B15003_010",
-  j       = "B15003_011",
-  k       = "B15003_012",
-  l       = "B15003_013",
-  m       = "B15003_014",
-  n       = "B15003_015",
-  o       = "B15003_016",
-  aa       = "B15003_017",
-  bb      = "B15003_018",
-  cc      = "B15003_022",
-  dd      = "B15003_023",
-  ee      = "B15003_024",
-  ff      = "B15003_025",
-  
-  #Housing
-  tothh   = "B25003_001",
-  own     = "B25003_002",
-  rent    = "B25003_003",
-  medval  = "B25077_001",
-  medrent = "B25064_001"
-)
-
-
 #tables
 tablist <- c(
   #Pop
@@ -374,37 +330,13 @@ tablist <- c(
   #Education
   "B15003",
   
-  
   #Housing
   "B25003",
   "B25077",
   "B25064"
 )
 
-#####RAW Data####
-sgeoid <- tibble(GEOID = unique(msa50_pc$SGEOID))
-st <- states(cb = TRUE) %>%
-  as_tibble() %>%
-  select(GEOID, STUSPS)
-
-samp_sts <- left_join(sgeoid, st)
-samp_sts <- unique(samp_sts$STUSPS)
-
-state_vars <- expand.grid(samp_sts,tablist, stringsAsFactors = FALSE) %>%
-  rename(state = Var1, table = Var2)
-
-####All variables All states####
-# if(!file.exists("./data/trct_vars.rds")){
-#   trct_vars  <- map2_df(state_vars$state, state_vars$table, function(x,y) {get_acs(state = x, geography = "tract", table = y)})
-#   
-#   write_rds(trct_vars, "./data/trct_vars.rds")
-#   
-# } else {
-#   trct_vars <-  read_rds("./data/trct_vars.rds")
-# }
-
-#### Tract data cleaning ####
-#named varlist
+# named varlist
 
 named_var <- c(
   #Pop
@@ -454,28 +386,31 @@ named_var <- c(
   "gini"    = "B19083_001",
   
   #Education
-  "popo25"  = "B15003_001",
-  "a"       = "B15003_002",
-  "b"       = "B15003_003",
-  "c"       = "B15003_004",
-  "d"      = "B15003_005",
-  "e"       = "B15003_006",
-  "f"       = "B15003_007",
-  "g"       = "B15003_008",
-  "h"       = "B15003_009",
-  "i"       = "B15003_010",
-  "j"       = "B15003_011",
-  "k"       = "B15003_012",
-  "l"       = "B15003_013",
-  "m"       = "B15003_014",
-  "n"       = "B15003_015",
-  "o"       = "B15003_016",
-  "aa"       = "B15003_017",
-  "bb"      = "B15003_018",
-  "cc"      = "B15003_022",
-  "dd"      = "B15003_023",
-  "ee"      = "B15003_024",
-  "ff"      = "B15003_025",
+  "popo25"    = "B15003_001",
+  "ns"        = "B15003_002",
+  "nur"       = "B15003_003",
+  "kg"        = "B15003_004",
+  "g1"        = "B15003_005",
+  "g2"        = "B15003_006",
+  "g3"        = "B15003_007",
+  "g4"        = "B15003_008",
+  "g5"        = "B15003_009",
+  "g6"        = "B15003_010",
+  "g7"        = "B15003_011",
+  "g8"        = "B15003_012",
+  "g9"        = "B15003_013",
+  "g10"       = "B15003_014",
+  "g11"       = "B15003_015",
+  "g12"       = "B15003_016",
+  "hs"        = "B15003_017",
+  "ged"       = "B15003_018",
+  "sc"        = "B15003_019",
+  "sc2"       = "B15003_020",
+  "ad"        = "B15003_021",
+  "BD"        = "B15003_022",
+  "MD"        = "B15003_023",
+  "PD"        = "B15003_024",
+  "DD"        = "B15003_025",
   
   #Housing
   "tothh"   = "B25003_001",
@@ -485,18 +420,33 @@ named_var <- c(
   "medrent" = "B25064_001"
 )
 
+#####RAW Data####
+sgeoid <- tibble(GEOID = unique(msa50_pc$SGEOID))
+st <- states(cb = TRUE) %>%
+  as_tibble() %>%
+  select(GEOID, STUSPS)
+
+samp_sts <- left_join(sgeoid, st)
+samp_sts <- unique(samp_sts$STUSPS)
+
+state_vars <- expand.grid(samp_sts,tablist, stringsAsFactors = FALSE) %>%
+  rename(state = Var1, table = Var2)
+
+####All variables All states####
+if(!file.exists("./data/trct_vars.rds")){
+  trct_vars  <- map2_df(state_vars$state, state_vars$table, function(x,y) {get_acs(state = x, geography = "tract", table = y, year = 2016)})
+  
+  write_rds(trct_vars, "./data/trct_vars.rds")
+  
+} else {
+  trct_vars <-  read_rds("./data/trct_vars.rds")
+}
+
 ####Long to wide####
-if(!file.exists("./data/trct_wide.rds")){
   trct_wide <- trct_vars %>% 
     select(GEOID, variable, estimate) %>% 
     spread(variable, estimate) %>% 
     select(GEOID, !!! named_var)
-  
-  write_rds(trct_wide, "./data/trct_wide.rds")
-  
-} else {
-  trct_wide <-  read_rds("./data/trct_wide.rds")
-}
 
 
 #### Income Bin Data ####
@@ -507,13 +457,18 @@ state_vars_inc <- expand.grid(samp_sts,inc_tabs, stringsAsFactors = FALSE) %>%
 
 
 if(!file.exists("./data/trct_incdist.rds")){
-  trct_incdist <- map2_df(state_vars_inc$state,state_vars_inc$table, function(x, y) {get_acs(state = x, geography = "tract", table = y)})
+  trct_incdist <- map2_df(state_vars_inc$state,state_vars_inc$table, function(x, y) {get_acs(state = x, geography = "tract", table = y, year = 2016)})
   
   write_rds(trct_incdist, "./data/trct_incdist.rds")
   
 } else {
   trct_incdist <-  read_rds("./data/trct_incdist.rds")
 }
+
+#Concentration limits
+inc <- 125
+wht <- 80
+
 
 #long to wide
 tinc_wide <- trct_incdist %>% 
@@ -555,81 +510,24 @@ WTOTHH       = B19001H_001,
 `w150k-200k` = B19001H_016,
 `wOver 200k` = B19001H_017) %>% 
   mutate(
-    hho100k  = rowSums(.[15:18]),
+    hho100k  = select(., `100k-125k`:`Over 200k`) %>% rowSums,
+    hho125k  = select(., `125k-150k`:`Over 200k`) %>% rowSums,
     hho200k  = `Over 200k`,
-    whho100k = rowSums(.[32:35]),
+    whho100k = select(., `w100k-125k`:`wOver 200k`) %>% rowSums,
+    whho125k = select(., `w125k-150k`:`wOver 200k`) %>% rowSums,
     whho200k = `wOver 200k`,
     phho100k = hho100k - whho100k,
-    phho200k = hho200k - whho200k
-  ) %>% select(GEOID, hho100k:phho200k)
+    phho125k = hho125k - whho125k,
+    phho200k = hho200k - whho200k,
+    affhh    = !!rlang::sym(paste0("hho", inc, "k")),
+    waffhh   = !!rlang::sym(paste0("whho", inc, "k")),
+    paffhh   = !!rlang::sym(paste0("phho", inc, "k"))
+
+  ) %>% select(GEOID, hho100k:paffhh)
+
+
 
 trct_wide <- left_join(trct_wide, tinc_wide)
-
-#### Metro-level census vars ####
-#Unique Metro Names - Create Short Version for printing
-metlong <- unique(msa_tracts_sf$METRON)
-metsrt <- substr(str_replace_all(metlong, fixed(" "), ""), 1, 4)
-
-
-metnam <- tibble(METRON = metlong, mabr = metsrt)
-
-#### Regional Variables ACS ####
-msa <- "metropolitan statistical area/micropolitan statistical area"
-msa_data_raw <- map_df(tablist, function (x){get_acs(geography = msa, table = x)})%>% 
-  select(GEOID, NAME, variable, estimate) %>% 
-  spread(variable, estimate) 
-
-msa_cenvars <- msa_data_raw %>% 
-  select(GEOID, NAME, !!! named_var) %>%
-  mutate(
-    poc      = totpop - white,
-    pctw     = 100*white/totpop,
-    pctb     = 100*black/totpop,
-    pctai    = 100*aian/totpop,
-    pcta     = 100*asian/totpop,
-    pcth     = 100*hisp/totpop,
-    pctp     = 100*poc/totpop,
-    other    = totpop-white-black-asian-hisp-aian,
-    pcto     = 100*other/totpop,
-    u18      = rowSums(.[8:15]),
-    pctu18   = 100*u18/totpop,
-    o65      = rowSums(.[16:27]),
-    pcto65   = 100*o65/totpop,
-    pctpov   = 100*totpov/povden,
-    nonpov   = povden - totpov,
-    pctbpov  = 100*bpov/bpovden,
-    pctwpov  = 100*wpov/wpovden,
-    ppov     = totpov - wpov,
-    ppovden  = povden - wpov,
-    pctppov  = 100*ppov/ppovden,
-    nohs     = rowSums(.[39:53]),
-    bach     = rowSums(.[54:59]),
-    pctnhs   = 100*nohs/popo25,
-    pctbach  = 100*bach/popo25,
-    pctown   = 100*own/tothh,
-    pctrent  = 100*rent/tothh,
-    NAME     = str_sub(NAME, end = -12)
-  ) %>%
-  select(GEOID:hisp, povden:popo25, tothh:length(names(.))) %>% 
-  left_join(top50msa, by = c("GEOID" = "MGEOID")) %>% 
-  drop_na(mtotpop) %>%
-  select(GEOID, NAME = NAME.x, everything(),  -NAME.y, -mtotpop) %>% 
-  left_join(metnam,  by = c("NAME" = "METRON")) %>% 
-  select(GEOID, NAME, mabr, totpop:pctrent) 
-
-#Add coli data
-coli_raw <- readxl::read_excel("./data/coli_2016.xlsx") 
-
-coli_av <- coli_raw %>% 
-  group_by(GEOID) %>% 
-  summarise(
-    av_coli  = round(mean(TOT_INDEX, na.rm = T)/100,2)
-  )
-povline <- 24563
-msa_cenvars <- left_join(msa_cenvars, coli_av, by = "GEOID") %>%
-  mutate(
-    afflim = 4*24563*av_coli
-  )
 
 #### Tract level census vars  #### 
 cen_dat <- trct_wide %>%
@@ -643,25 +541,25 @@ cen_dat <- trct_wide %>%
     pctp     = 100*poc/totpop,
     other    = totpop-white-black-asian-hisp-aian,
     pcto     = 100*other/totpop,
-    u18      = rowSums(.[8:15]),
+    u18      = select(., mu5:f15_17) %>% rowSums,
     pctu18   = 100*u18/totpop,
-    o65      = rowSums(.[16:27]),
+    o65      = select(., m65_66:fo84) %>% rowSums,
     pcto65   = 100*o65/totpop,
     pctpov   = 100*totpov/povden,
-    pctaff   = 100*hho100k/tothh,
+    pctaff   = 100*affhh/tothh,
     nonpov   = totpop - totpov,
     nonwpov  = totpop - wpov,
-    nonaff   = tothh - hho100k,
-    nonwaff  = tothh - whho100k,
-    nonpaff  = tothh - phho100k,
+    nonaff  = tothh - affhh,
+    nonwaff  = tothh - waffhh,
+    nonpaff = tothh - paffhh,
     pctbpov  = 100*bpov/bpovden,
     pctwpov  = 100*wpov/wpovden,
     ppov     = totpov - wpov,
     nonppov  = totpop - ppov,
     ppovden  = povden - wpov,
     pctppov  = 100*ppov/ppovden,
-    nohs     = rowSums(.[39:53]),
-    bach     = rowSums(.[54:59]),
+    nohs     = select(., ns:g12) %>% rowSums,
+    bach     = select(., BD:DD) %>% rowSums,
     pctnhs   = 100*nohs/popo25,
     pctbach  = 100*bach/popo25,
     pctown   = 100*own/tothh,
@@ -674,7 +572,7 @@ div_index <- function(...){
   x <- list(...)
   x <- unlist(x)/100
   x <- ifelse(!is.finite(x)| x == 0,0, 
-                x*log(1/x))
+              x*log(1/x))
   
   sum(x)/length(x)
 }
@@ -685,110 +583,120 @@ cen_dat$divindex <- div$divindex
 
 #Join to spatial/geovars
 # coli to tract data
-coli <- msa_cenvars %>% select(MGEOID = GEOID, afflim)
+#coli <- msa_cenvars %>% select(MGEOID = GEOID, afflim)
 
-msa_tracts_df <-  msa_tracts_sf %>% as_tibble() %>% select(-geometry)
+#Unique Metro Names - Create Short Version for printing
+metlong <- unique(msa_tracts_sf$METRON)
+metsrt <- substr(str_replace_all(metlong, fixed(" "), ""), 1, 4)
+
+
+metnam <- tibble(METRON = metlong, mabr = metsrt)
+
+msa_tracts_df <-  dspace(msa_tracts_sf)
+
 tract_data <- left_join(msa_tracts_df, tract_geovars, by = "GEOID") %>% 
   select(STATEFP:GEOID, CNGEOID, MGEOID = MGEOID.x, METRON = METRON.x, dist, cc_name, sqmi, cc_status) %>%
   mutate(
     METRON = str_trim(METRON)
   ) %>% 
   left_join(cen_dat) %>% 
-  left_join(coli, by = "MGEOID") %>% 
   mutate(
-pop_dens  = totpop/sqmi,
-con_wht   = ifelse(pctw > 90, "Y", "N"),
-con_poc   = ifelse(pctp > 50, "Y", "N"),
-con_blk   = ifelse(pctb > 50, "Y", "N"),
-con_pov   = ifelse(pctpov > 40, "Y", "N"),
-con_aff   = ifelse(medinc > 100000, "Y", "N"),
-rcap_p    = ifelse(con_poc == "Y" & con_pov == "Y", "Y", "N"),
-rcap_w    = ifelse(con_wht == "Y" & con_pov == "Y", "Y", "N"),
-rcaa_w    = ifelse(con_wht == "Y" & con_aff == "Y", "Y", "N"),
-rcaa_p    = ifelse(con_poc == "Y" & con_aff == "Y", "Y", "N"),
-rc_ap     = ifelse(rcaa_w == "Y", "RCAA",
-                  ifelse(rcap_p == "Y", "RCAP", NA)),
-segindex  = case_when(
-  con_wht == "Y" & con_pov == "N" & con_aff == "N" ~ "con_wht",
-  con_poc == "Y" & con_pov == "N" & con_aff == "N" ~ "con_poc",
-  con_pov == "Y" & con_wht == "N" & con_poc == "N" ~ "con_pov",
-  con_aff == "Y" & con_wht == "N" & con_poc == "N" ~ "con_aff",
-  rcap_p  == "Y"                                   ~ "rcap_p",
-  rcap_w  == "Y"                                   ~ "rcap_w",
-  rcaa_w  == "Y"                                   ~ "rcaa_w",
-  rcaa_p  == "Y"                                   ~ "rcaa_p"
-)) %>% 
+    pop_dens   = totpop/sqmi,
+    con_wht    = ifelse(pctw > wht, "Y", "N"),
+    con_poc    = ifelse(pctp > 50, "Y", "N"),
+    con_blk    = ifelse(pctb > 50, "Y", "N"),
+    con_pov    = ifelse(pctpov > 40, "Y", "N"),
+    con_aff    = ifelse(medinc > inc*1000, "Y", "N"),
+    rcap_p     = ifelse(con_poc == "Y" & con_pov == "Y", "Y", "N"),
+    rcap_w     = ifelse(con_wht == "Y" & con_pov == "Y", "Y", "N"),
+    rcaa_w     = ifelse(con_wht == "Y" & con_aff == "Y", "Y", "N"),
+    rcaa_p     = ifelse(con_poc == "Y" & con_aff == "Y", "Y", "N"),
+    rc_ap      = ifelse(rcaa_w == "Y", "RCAA",
+                        ifelse(rcap_p == "Y", "RECAP", NA)),
+    segindex  = case_when(
+      con_wht == "Y" & con_pov == "N" & con_aff == "N" ~ "con_wht",
+      con_poc == "Y" & con_pov == "N" & con_aff == "N" ~ "con_poc",
+      con_pov == "Y" & con_wht == "N" & con_poc == "N" ~ "con_pov",
+      con_aff == "Y" & con_wht == "N" & con_poc == "N" ~ "con_aff",
+      rcap_p  == "Y"                                   ~ "rcap_p",
+      rcap_w  == "Y"                                   ~ "rcap_w",
+      rcaa_w  == "Y"                                   ~ "rcaa_w",
+      rcaa_p  == "Y"                                   ~ "rcaa_p"
+    )) %>% 
   filter(totpop > 0, !is.na(medinc)) %>%
-  left_join(metnam)
+  left_join(metnam) %>% 
+  ungroup()
 
 
-write_rds(tract_data, "./data/tractdata.rds")
+
 #### Regional Concentration Measures ####
 sumr <- function(x) {sum(x == "Y", na.rm = T)}
 
 met_con <- tract_data %>% 
   group_by(MGEOID, METRON) %>% 
-  summarise_at(vars(con_wht:rcaa_p), funs(sumr))
+  summarise_at(vars(con_wht:rcaa_p), funs(sumr)) %>% 
+  ungroup()
 
-# met con suburbs
-met_conS <- tract_data %>% 
-  group_by(MGEOID, METRON, cc_status) %>% 
-  summarise_at(vars(con_wht:rcaa_p), funs(sumr))
+# # met con suburbs
+# met_conS <- tract_data %>% 
+#   group_by(MGEOID, METRON, cc_status) %>% 
+#   summarise_at(vars(con_wht:rcaa_p), funs(sumr))
 
 n_tracts <- tract_data %>% 
   group_by(MGEOID, METRON) %>% 
   summarise(
     n_tracts = n()
-  )
+  ) %>% 
+  ungroup()
 
 #Share of tracts by concentration
 
 met_con <- left_join(n_tracts, met_con) %>% 
   mutate(
-    pconw   = 100*con_wht/n_tracts,
-    pconp   = 100*con_poc/n_tracts,
-    pconb   = 100*con_blk/n_tracts,
-    pconpv  = 100*con_pov/n_tracts,
-    pconaf  = 100*con_aff/n_tracts,
-    prcapp  = 100*rcap_p/n_tracts,
-    prcapw  = 100*rcap_w/n_tracts,
-    prcaaw  = 100*rcaa_w/n_tracts,
-    prcaap  = 100*rcaa_p/n_tracts,
-    rt_cacp  = pconaf/pconpv
+    pconw    = 100*con_wht/n_tracts,
+    pconp    = 100*con_poc/n_tracts,
+    pconb    = 100*con_blk/n_tracts,
+    pconpv   = 100*con_pov/n_tracts,
+    pconaf   = 100*con_aff/n_tracts,
+    prcapp   = 100*rcap_p/n_tracts,
+    prcapw   = 100*rcap_w/n_tracts,
+    prcaaw   = 100*rcaa_w/n_tracts,
+    prcaap   = 100*rcaa_p/n_tracts,
+    rt_cacp  = pconaf/pconpv,
   ) %>% 
-  mutate_if(is.numeric, round, 2)
+  mutate_if(is.numeric, round, 2) %>% 
+  ungroup()
 
 #Compare Concentrations  Definitions
 metcon <- left_join(metnam, met_con)
-
 
 
 #shr of residents in concentrated areas
 met_con2 <- tract_data %>%
   group_by(MGEOID, METRON) %>% 
   summarise(
-    ccpop      = sum(totpop[cc_status == "Y"], na.rm = T),
-    ccppop     = sum(poc[cc_status == "Y"], na.rm = T),
-    ccbpop     = sum(black[cc_status == "Y"], na.rm = T),
+    ccpop      = sum(totpop[cc_status == 1], na.rm = T),
+    ccppop     = sum(poc[cc_status == 1], na.rm = T),
+    ccbpop     = sum(black[cc_status == 1], na.rm = T),
     wpop_cnw   = sum(white[con_wht == "Y"], na.rm = T),
     wpop_cnw50 = sum(white[pctw > 50], na.rm = T),
     ppop_conp  = sum(poc[con_poc == "Y"], na.rm = T),
     bpop_conb  = sum(black[con_blk == "Y"], na.rm = T),
-    aff_cona   = sum(hho100k[con_aff == "Y"], na.rm = T),
+    aff_cona   = sum(affhh[con_aff == "Y"], na.rm = T),
     pov_conp   = sum(totpov[con_pov == "Y"], na.rm = T),
     ppov_rcp   = sum(ppov[rcap_p == "Y"], na.rm = T),
     wpov_rcp   = sum(wpov[rcap_w == "Y"], na.rm = T),
-    affhh      = sum(hho100k, na.rm = T),
-    waffhh     = sum(whho100k, na.rm = T),
-    paffhh     = sum(phho100k, na.rm = T),
-    waff_rca   = sum(whho100k[rcaa_w == "Y"], na.rm = T),
-    paff_rca   = sum(phho100k[rcaa_p == "Y"], na.rm = T),
-    waff_cona  = sum(whho100k[con_aff == "Y"], na.rm = T),
-    paff_cona  = sum(phho100k[con_aff == "Y"], na.rm = T)
-  )
+    waff_rca   = sum(waffhh[rcaa_w == "Y"], na.rm = T),
+    paff_rca   = sum(paffhh[rcaa_p == "Y"], na.rm = T),
+    waff_cona  = sum(waffhh[con_aff == "Y"], na.rm = T),
+    paff_cona  = sum(paffhh[con_aff == "Y"], na.rm = T),
+    affhh      = sum(affhh, na.rm = T),
+    waffhh     = sum(waffhh, na.rm = T),
+    paffhh     = sum(paffhh, na.rm = T)
+  ) %>% ungroup()
 
 met_con <- left_join(met_con, met_con2) %>% ungroup()
-  
+
 
 #### Regional Segregation Measurements ####
 tract_data_nest  <- tract_data %>% 
@@ -839,76 +747,145 @@ met_seg <- tract_data_nest %>%
     iso_w       = map(data, iso_index,white, white),
     iso_p       = map(data, iso_index,poc, poc),
     dis_pov     = map(data, dissim_index,totpov, nonpov),
-    dis_aff     = map(data, dissim_index, hho100k, nonaff),
+    dis_aff     = map(data, dissim_index, affhh, nonaff),
     iso_pov     = map(data, iso_index, totpov, totpov),
-    iso_aff     = map(data, iso_index, hho100k, hho100k),
-    iso_waff    = map(data, iso_index, whho100k, whho100k),
+    iso_aff     = map(data, iso_index, affhh, affhh),
+    iso_waff    = map(data, iso_index, waffhh, waffhh),
     iso_wpov    = map(data, iso_index, wpov, wpov),
-    iso_paff    = map(data, iso_index, phho100k, phho100k),
+    iso_paff    = map(data, iso_index, paffhh, paffhh),
     iso_ppov    = map(data, iso_index, ppov, ppov),
-    dis_waff    = map(data, dissim_index, whho100k, nonwaff),
-    dis_ppov   = map(data, dissim_index, ppov, nonppov),
-    dis_paff    = map(data, dissim_index, phho100k, nonpaff),
+    dis_waff    = map(data, dissim_index, waffhh, nonwaff),
+    dis_ppov    = map(data, dissim_index, ppov, nonppov),
+    dis_paff    = map(data, dissim_index, paffhh, nonpaff),
     dis_wppov   = map(data, dissim_index, wpov, nonwpov)
-    ) %>%
+  ) %>%
   select(-data) %>% 
   unnest()
 
 
+#### Metro-level census vars ####
+
+#### Regional Variables ACS ####
+msa <- "metropolitan statistical area/micropolitan statistical area"
+
+if(!file.exists("./data/msadatraw.rds")) {
+msa_data_raw <- map_df(tablist, function (x){get_acs(geography = msa, table = x, cache_table = TRUE, year = 2016)})%>% 
+  select(GEOID, NAME, variable, estimate) %>% 
+  spread(variable, estimate) 
+
+write_rds(msa_data_raw, "./data/msadatraw.rds")
+} else {
+  msa_data_raw <-  read_rds("./data/msadatraw.rds")
+}
+  
+
+msa_cenvars <- msa_data_raw %>% 
+  select(GEOID, NAME, !!! named_var) %>%
+  mutate(
+    poc      = totpop - white,
+    pctw     = 100*white/totpop,
+    pctb     = 100*black/totpop,
+    pctai    = 100*aian/totpop,
+    pcta     = 100*asian/totpop,
+    pcth     = 100*hisp/totpop,
+    pctp     = 100*poc/totpop,
+    other    = totpop-white-black-asian-hisp-aian,
+    pcto     = 100*other/totpop,
+    u18      = select(., mu5:f15_17) %>% rowSums,
+    pctu18   = 100*u18/totpop,
+    o65      = select(., m65_66:fo84) %>% rowSums,
+    pcto65   = 100*o65/totpop,
+    pctpov   = 100*totpov/povden,
+    nonpov   = povden - totpov,
+    pctbpov  = 100*bpov/bpovden,
+    pctwpov  = 100*wpov/wpovden,
+    ppov     = totpov - wpov,
+    ppovden  = povden - wpov,
+    pctppov  = 100*ppov/ppovden,
+    nohs     = select(., ns:g12) %>% rowSums,
+    bach     = select(., BD:DD) %>% rowSums,
+    pctnhs   = 100*nohs/popo25,
+    pctbach  = 100*bach/popo25,
+    pctown   = 100*own/tothh,
+    pctrent  = 100*rent/tothh,
+    NAME     = str_sub(NAME, end = -12)
+  ) %>% 
+  select(GEOID:hisp, povden:popo25, tothh:length(names(.))) %>% 
+  left_join(top50msa, by = c("GEOID" = "MGEOID")) %>% 
+  drop_na(mtotpop) %>%
+  select(GEOID, NAME = NAME.x, everything(),  -NAME.y, -mtotpop) %>% 
+  left_join(metnam,  by = c("NAME" = "METRON")) %>% 
+  select(GEOID, NAME, mabr, totpop:pctrent) 
+
+#Add coli data
+# coli_raw <- readxl::read_excel("./data/coli_2016.xlsx") 
+# 
+# coli_av <- coli_raw %>% 
+#   group_by(GEOID) %>% 
+#   summarise(
+#     av_coli  = round(mean(TOT_INDEX, na.rm = T)/100,2)
+#   )
+# povline <- 24563
+# msa_cenvars <- left_join(msa_cenvars, coli_av, by = "GEOID") %>%
+#   mutate(
+#     afflim = 4*24563*av_coli
+#   )
+
 
 #### Merge regional datasets ####
+cregion <- read_csv("./data/metvars.csv") %>% 
+  mutate_all(as.character)
+
 met_data <- left_join(msa_cenvars, met_seg, by = c("GEOID" = "MGEOID")) %>% 
   left_join(met_con, by = c("GEOID" = "MGEOID"))
 
 
 
-cregion <- read_csv("./data/metvars.csv") %>% 
-  mutate_all(as.character)
+met_data <- met_data %>% 
+  mutate(
+    shrw_conw   = 100*wpop_cnw/white,
+    shrp_conp   = 100*ppop_conp/poc,
+    shrb_conb   = 100*bpop_conb/black,
+    shrw_conw50 = 100*wpop_cnw50/white,
+    shr_waff    = 100*waffhh/tothh,
+    shra_cona   = 100*aff_cona/affhh,
+    shrwa_conwa = 100*waff_rca/waffhh,
+    shrpp_conpp = 100*ppov_rcp/ppov,
+    shr_ppov    =100*ppov/totpop,
+    rcapw_type  = case_when(
+      prcaaw > median(met_data$prcaaw) & prcapp > median(met_data$prcapp) ~ "High-RCAA/High-RCAP",
+      prcaaw > median(met_data$prcaaw) & prcapp < median(met_data$prcapp) ~ "High-RCAA/Low-RCAP", 
+      prcaaw < median(met_data$prcaaw) & prcapp > median(met_data$prcapp) ~ "Low-RCAA/High-RCAP", 
+      prcaaw < median(met_data$prcaaw) & prcapp < median(met_data$prcapp) ~ "Low-RCAA/Low-RCAP" 
+    )
+  ) %>%
+  mutate_if(is.numeric, round, 2) %>% 
+  left_join(cregion) %>% 
+  rename(Region = REGION) %>% 
+  select(-METRON.y, -METRON.x)
 
-met_data <- left_join(cregion, met_data)
+
+# Write Metro Data
 write_rds(met_data, "./data/metdata.rds")
+write_csv(met_data, "./data/metdata.csv")
 
-  
+
+# Add region to met_data 
+rg <- met_data %>% 
+  select(MGEOID = GEOID, Region, rcapw_type)
+
+tract_data <- tract_data %>% 
+  left_join(rg)
+
+
+# Write Tract Data
+write_rds(tract_data, "./data/tractdata.rds")
+
 
 tract_data_sf <- left_join(msa_tracts_sf, tract_data) %>% 
   mutate_if(is.numeric, round, 2)
 
 write_rds(tract_data_sf, "./data/trctdatasf.rds")
+st_write(tract_data_sf, "./data/tract_data.shp", delete_dsn = TRUE)
 
-
-st_write(tract_data_sf, "./data/t_test.shp", delete_dsn = TRUE)
-
-##########################################
-coli <- ggplot(metcon, aes(x = pconaf, y = pconpv, label = mabr)) +
-  geom_text() +
-  geom_hline(yintercept = mean(metcon$pconpv)) +
-  geom_vline(xintercept = mean(metcon$pconaf)) +
-  labs(x = "% Con Aff", y = "% Con Pov", title = "Concentrated Poverty and Affluence by Metro Area",
-       subtitle = "Aff defined as 4x pov line * COLI")
-
-inc100k <- ggplot(metcon, aes(x = pconaf2, y = pconpv, label = mabr)) +
-  geom_text() +
-  geom_hline(yintercept = mean(metcon$pconpv)) +
-  geom_vline(xintercept = mean(metcon$pconaf2)) +
-  labs(x = "% RCAA", y = "% RCAP", title = "Concentrated Poverty and Affluence by Metro Area",
-       subtitle = "Aff defined as med hhinc > 100k")
-
-cowplot::plot_grid(coli, inc100k)
-
-### RCAAA 100k
-
-coli <- ggplot(metcon, aes(x = prcaaw, y = prcapp, label = mabr)) +
-  geom_text() +
-  geom_hline(yintercept = mean(metcon$prcapp)) +
-  geom_vline(xintercept = mean(metcon$prcaaw)) +
-  labs(x = "% Con Aff", y = "% Con Pov", title = "Racially Concentrated Poverty and Affluence by Metro Area",
-       subtitle = "Aff defined as 4x pov line * COLI")
-
-inc100k <- ggplot(metcon, aes(x = prcaaw2, y = prcapp, label = mabr)) +
-  geom_text() +
-  geom_hline(yintercept = mean(metcon$prcapp)) +
-  geom_vline(xintercept = mean(metcon$prcaaw2)) +
-  labs(x = "% RCAA", y = "% RCAP", title = "Racially Concentrated Poverty and Affluence by Metro Area",
-       subtitle = "Aff defined as med hhinc > 100k")
-
-cowplot::plot_grid(coli, inc100k)
+beepr::beep(sound = 8)
